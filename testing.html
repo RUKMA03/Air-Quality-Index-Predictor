@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Quality Map</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            height: 500px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .legend {
+            background: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+        }
+        .legend-item {
+            margin: 3px 0;
+            display: flex;
+            align-items: center;
+        }
+        .color-box {
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+            border: 1px solid #ccc;
+        }
+        .search-container {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            margin-top: 10px;
+        }
+        .search-container input {
+            padding: 6px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-right: 8px;
+            width: 200px;
+        }
+        .search-container button {
+            padding: 6px 12px;
+            background-color: #009966;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .search-container button:hover {
+            background-color: #007744;
+        }
+        #loading {
+            display: none;
+            margin-left: 10px;
+            color: #666;
+        }
+        #error-message {
+            color: #cc0033;
+            margin-top: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Air Quality Map</h1>
+    <div id="map"></div>
+    <div class="info-box">
+        <h2>About Air Quality Index (AQI)</h2>
+        <p>The Air Quality Index (AQI) is a measure of air pollution. Lower values indicate better air quality.</p>
+        <div id="legend"></div>
+        <div class="search-container">
+            <input type="text" id="city-search" placeholder="Search for a city" />
+            <button id="search-btn">Search</button>
+            <span id="loading">Searching...</span>
+        </div>
+        <div id="error-message"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        // Initialize the map
+        const map = L.map('map').setView([20, 0], 2);
+        let currentMarker = null;
+
+        // Add the OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Add the WAQI tile layer
+        L.tileLayer('https://tiles.waqi.info/tiles/usepa-aqi/{z}/{x}/{y}.png?token=ecb06e434ead402651a2901d6bdd3d5032a4cd8e', {
+            attribution: 'Air Quality Tiles &copy; <a href="https://waqi.info">waqi.info</a>',
+            opacity: 0.75
+        }).addTo(map);
+
+        // Add a legend
+        const legend = L.control({ position: 'bottomright' });
+        legend.onAdd = function () {
+            const div = L.DomUtil.create('div', 'legend');
+            const grades = [
+                { value: '0-50', color: '#009966', label: 'Good' },
+                { value: '51-100', color: '#ffde33', label: 'Moderate' },
+                { value: '101-150', color: '#ff9933', label: 'Unhealthy for Sensitive Groups' },
+                { value: '151-200', color: '#cc0033', label: 'Unhealthy' },
+                { value: '201-300', color: '#660099', label: 'Very Unhealthy' },
+                { value: '300+', color: '#7e0023', label: 'Hazardous' }
+            ];
+
+            let legendContent = '';
+            grades.forEach(grade => {
+                legendContent += `
+                    <div class="legend-item">
+                        <span class="color-box" style="background: ${grade.color}"></span>
+                        <span>${grade.value}: ${grade.label}</span>
+                    </div>`;
+            });
+            div.innerHTML = legendContent;
+            return div;
+        };
+        legend.addTo(map);
+
+        function getAQIColor(aqi) {
+            if (aqi <= 50) return '#009966';
+            if (aqi <= 100) return '#ffde33';
+            if (aqi <= 150) return '#ff9933';
+            if (aqi <= 200) return '#cc0033';
+            if (aqi <= 300) return '#660099';
+            return '#7e0023';
+        }
+
+        async function fetchAQIData(city) {
+            const loadingSpan = document.getElementById('loading');
+            const errorMessage = document.getElementById('error-message');
+    
+            loadingSpan.style.display = 'inline';
+            errorMessage.style.display = 'none';
+
+            try {
+                // Fetch data from the Flask API
+                const response = await fetch(`http://127.0.0.1:8000/api/api_req?city=${encodeURIComponent(city)}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch data');
+                }
+
+                // Remove existing marker if any
+                if (currentMarker) {
+                    map.removeLayer(currentMarker);
+                }
+
+                const { aqi, city: { name: cityName, geo }, iaqi } = data;
+                const [lat, lon] = geo;
+
+                // Create popup content
+                const popupContent = `
+                    <div style="min-width: 200px;">
+                        <h3 style="margin: 0 0 10px 0;">${cityName}</h3>
+                        <p style="margin: 5px 0;"><strong>AQI:</strong> <span style="color: ${getAQIColor(aqi)}">${aqi}</span></p>
+                        <hr style="margin: 10px 0;">
+                        <p style="margin: 5px 0;"><strong>CO:</strong> ${iaqi.co?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0;"><strong>NO₂:</strong> ${iaqi.no2?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0;"><strong>O₃:</strong> ${iaqi.o3?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0;"><strong>PM10:</strong> ${iaqi.pm10?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0;"><strong>PM2.5:</strong> ${iaqi.pm25?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0;"><strong>SO₂:</strong> ${iaqi.so2?.v || 'N/A'}</p>
+                        <p style="margin: 5px 0; font-size: 0.8em;">Last updated: ${new Date(data.time.iso).toLocaleString()}</p>
+                    </div>
+                `;
+
+                currentMarker = L.marker([lat, lon])
+                    .bindPopup(popupContent)
+                    .addTo(map);
+
+                // Center map on the new marker and zoom in
+                map.setView([lat, lon], 10);
+                currentMarker.openPopup();
+
+            } catch (error) {
+                errorMessage.textContent = `Error: ${error.message}`;
+                errorMessage.style.display = 'block';
+            } finally {
+                loadingSpan.style.display = 'none';
+            }
+        }
+
+        const searchBtn = document.getElementById('search-btn');
+        const cityInput = document.getElementById('city-search');
+
+        searchBtn.addEventListener('click', () => {
+            const city = cityInput.value.trim();
+            if (city) {
+                fetchAQIData(city);
+            }
+        });
+
+        cityInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                const city = cityInput.value.trim();
+                if (city) {
+                    fetchAQIData(city);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
